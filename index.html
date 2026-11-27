@@ -8,7 +8,10 @@
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
     button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    pre { white-space: pre-wrap; margin: 0; }
+    #status { margin: 1rem 0 .5rem; }
+    #status.warning { color: #8a4b00; }
+    #result[hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -18,18 +21,60 @@
     <textarea id="message" rows="4"></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+  <p id="status" role="status" aria-live="polite"></p>
+  <section id="result" hidden>
+    <p>Тема: <strong id="topic"></strong></p>
+    <p>Черновик ответа:</p>
+    <pre id="draft"></pre>
+  </section>
   <script type="module">
+    const TOPIC_LABELS = { delivery: "Доставка", pricing: "Цены", other: "Другое" };
     const form = document.querySelector("form");
+    const message = document.querySelector("#message");
+    const status = document.querySelector("#status");
     const result = document.querySelector("#result");
+    const topic = document.querySelector("#topic");
+    const draft = document.querySelector("#draft");
+    let lastRequest = 0;
+
+    function show(text, { warning = false, topicValue = null, draftValue = null } = {}) {
+      status.textContent = text;
+      status.className = warning ? "warning" : "";
+      // прежний черновик всегда стираем, чтобы менеджер не отправил ответ на другую заявку
+      topic.textContent = topicValue ?? "";
+      draft.textContent = draftValue ?? "";
+      result.hidden = draftValue === null;
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const reply = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
-      });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      const text = message.value;
+      const requestId = ++lastRequest; // и пустая отправка делает прежний запрос устаревшим
+      if (text.trim() === "") return show("Введите текст заявки.", { warning: true });
+      show("Разбираем заявку…");
+      let body;
+      try {
+        const reply = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        body = await reply.json();
+      } catch {
+        body = { status: "network_error" };
+      }
+      if (requestId !== lastRequest) return; // пришёл ответ на старый запрос, его не показываем
+      if (body.status === "ready") {
+        show("Проверьте черновик перед отправкой клиенту.", { topicValue: TOPIC_LABELS[body.topic] ?? body.topic, draftValue: body.draft });
+      } else if (body.status === "manual_review") {
+        show("Автоматически разобрать заявку не получилось. Определите тему и напишите ответ вручную.", { warning: true });
+      } else if (body.status === "invalid_input") {
+        show("Введите текст заявки.", { warning: true });
+      } else if (body.status === "too_large") {
+        show("Текст заявки слишком длинный. Сократите его или разберите заявку вручную.", { warning: true });
+      } else {
+        show("Сервис сейчас недоступен. Разберите заявку вручную или попробуйте ещё раз.", { warning: true });
+      }
     });
   </script>
 </body>

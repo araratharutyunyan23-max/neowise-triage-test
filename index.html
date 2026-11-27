@@ -49,8 +49,8 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const text = message.value;
+      const requestId = ++lastRequest; // и пустая отправка делает прежний запрос устаревшим
       if (text.trim() === "") return show("Введите текст заявки.", { warning: true });
-      const requestId = ++lastRequest;
       show("Разбираем заявку…");
       let body;
       try {
@@ -70,6 +70,8 @@
         show("Автоматически разобрать заявку не получилось. Определите тему и напишите ответ вручную.", { warning: true });
       } else if (body.status === "invalid_input") {
         show("Введите текст заявки.", { warning: true });
+      } else if (body.status === "too_large") {
+        show("Текст заявки слишком длинный. Сократите его или разберите заявку вручную.", { warning: true });
       } else {
         show("Сервис сейчас недоступен. Разберите заявку вручную или попробуйте ещё раз.", { warning: true });
       }

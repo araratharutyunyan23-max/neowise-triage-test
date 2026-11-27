@@ -1,8 +1,8 @@
 // Запуск: node --test
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createApp } from "../server.mjs";
-import { parseModelOutput } from "../triage.mjs";
+import { createApp } from "../app.mjs";
+import { MODEL_TIMEOUT_MS, parseModelOutput, triage } from "../triage.mjs";
 
 const MANUAL = { status: "manual_review", topic: null, draft: null };
 
@@ -59,7 +59,9 @@ test("модель не ответила за 300 мс: ручной разбо�
     const { status, body } = await post(send("Сколько стоит доставка? [timeout]"));
     assert.equal(status, 200);
     assert.deepEqual(body, MANUAL);
-    assert.ok(Date.now() - started < 1000, "ответ должен прийти раньше, чем имитатор досчитает 1,2 с");
+    const elapsed = Date.now() - started;
+    assert.equal(MODEL_TIMEOUT_MS, 300);
+    assert.ok(elapsed >= 250 && elapsed < 700, `ответ за ${elapsed} мс, ждём около 300 мс, а не 1,2 с имитатора`);
   });
 });
 
@@ -78,4 +80,37 @@ test("проверка ответа модели", () => {
   assert.equal(parseModelOutput('{"topic":"other"}'), null);
   assert.equal(parseModelOutput("not json"), null);
   assert.equal(parseModelOutput("null"), null);
+});
+
+test("граница 300 мс: быстрый ответ модели принимается, медленный уходит на ручной разбор", async () => {
+  const answerAfter = (ms) => () => new Promise((resolve) => setTimeout(() => resolve('{"topic":"other","draft":"Готово"}'), ms));
+  assert.equal((await triage("заявка", { classify: answerAfter(MODEL_TIMEOUT_MS - 150) })).status, "ready");
+  assert.deepEqual(await triage("заявка", { classify: answerAfter(MODEL_TIMEOUT_MS + 150) }), MANUAL);
+});
+
+test("слишком большое тело: 413, а следующий запрос на том же соединении не зависает", async () => {
+  await withServer(async (post) => {
+    const big = await post(send("а".repeat(700_000)));
+    assert.equal(big.status, 413);
+    assert.deepEqual(big.body, { status: "too_large" });
+    const started = Date.now();
+    const next = await post(send("Когда будет доставка?"));
+    assert.equal(next.body.status, "ready");
+    assert.ok(Date.now() - started < 1000);
+  });
+});
+
+test("тело не в UTF-8 считается неверным вводом", async () => {
+  const server = createApp({ log: () => {} });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/triage`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: Buffer.concat([Buffer.from('{"text":"'), Buffer.from([0xff, 0xfe]), Buffer.from('"}')]),
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { status: "invalid_input" });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
